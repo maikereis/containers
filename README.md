@@ -8,11 +8,12 @@ This markdown demonstrates container deployment on AWS using Docker, CloudFormat
 - Basic familiarity with Docker and AWS services
 
 ## Architecture Overview
-
 The CloudFormation template provisions:
 - **VPC** with public subnet and internet gateway
 - **IAM roles** with necessary permissions for container execution
 - **Security group** with configurable access rules
+
+![](diagram.png)
 
 ## Quick Start
 
