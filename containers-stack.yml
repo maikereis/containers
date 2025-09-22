@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Containers Exercise - VPC, DynamoDB, and IAM Resources"
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VpcCIDR
+          - SubnetCIDR
+    ParameterLabels:
+      VpcCIDR:
+        default: "VPC CIDR Block"
+      SubnetCIDR:
+        default: "Public Subnet CIDR Block"
+
+Parameters:
+  VpcCIDR:
+    Type: String
+    Default: "10.16.0.0/16"
+    Description: "CIDR block for the VPC"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-8]))$"
+    ConstraintDescription: "Must be a valid IP CIDR range of the form x.x.x.x/x"
+
+  SubnetCIDR:
+    Type: String
+    Default: "10.16.10.0/24"
+    Description: "CIDR block for the public subnet"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(1[6-9]|2[0-8]))$"
+    ConstraintDescription: "Must be a valid IP CIDR range of the form x.x.x.x/x"
+
+  Environment:
+    Type: String
+    Default: "dev"
+    Description: "Environment name for resource tagging"
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # VPC Resources
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Ref SubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-subnet"
+        - Key: Environment
+          Value: !Ref Environment
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+        - Key: Environment
+          Value: !Ref Environment
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Group
+  ContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for container instances"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+          Description: "HTTP traffic"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+          Description: "HTTPS traffic"
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref VpcCIDR
+          Description: "SSH access from VPC"
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: "0.0.0.0/0"
+          Description: "All outbound traffic"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-container-sg"
+        - Key: Environment
+          Value: !Ref Environment
+
+  ## DynamoDB Table
+  #EmployeesTable:
+  #  Type: AWS::DynamoDB::Table
+  #  Properties:
+  #    TableName: !Sub "${AWS::StackName}-employees"
+  #    AttributeDefinitions:
+  #      - AttributeName: id
+  #        AttributeType: S
+  #    KeySchema:
+  #      - AttributeName: id
+  #        KeyType: HASH
+  #    BillingMode: PAY_PER_REQUEST
+  #    PointInTimeRecoverySpecification:
+  #      PointInTimeRecoveryEnabled: true
+  #    SSESpecification:
+  #      SSEEnabled: true
+  #    Tags:
+  #      - Key: Name
+  #        Value: !Sub "${AWS::StackName}-employees-table"
+  #      - Key: Environment
+  #        Value: !Ref Environment
+  #  DeletionPolicy: Retain
+  #  UpdateReplacePolicy: Retain
+
+  # IAM Resources
+  ContainerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-container-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: BasicAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+        #- PolicyName: DynamoDBAccess
+        #  PolicyDocument:
+        #    Version: "2012-10-17"
+        #    Statement:
+        #      - Effect: Allow
+        #        Action:
+        #          - dynamodb:GetItem
+        #          - dynamodb:PutItem
+        #          - dynamodb:UpdateItem
+        #          - dynamodb:DeleteItem
+        #          - dynamodb:Query
+        #          - dynamodb:Scan
+        #        Resource: !GetAtt EmployeesTable.Arn
+        #      - Effect: Allow
+        #        Action:
+        #          - logs:CreateLogGroup
+        #          - logs:CreateLogStream
+        #          - logs:PutLogEvents
+        #        Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-container-execution-role"
+        - Key: Environment
+          Value: !Ref Environment
+
+  ContainerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-container-instance-profile"
+      Roles:
+        - !Ref ContainerExecutionRole
+
+Outputs:
+  VPCId:
+    Description: "VPC ID"
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-vpc-id"
+
+  PublicSubnetId:
+    Description: "Public Subnet ID"
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub "${AWS::StackName}-public-subnet-id"
+
+  SecurityGroupId:
+    Description: "Container Security Group ID"
+    Value: !Ref ContainerSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-security-group-id"
+
+  #DynamoDBTableName:
+  #  Description: "DynamoDB Table Name"
+  #  Value: !Ref EmployeesTable
+  #  Export:
+  #    Name: !Sub "${AWS::StackName}-dynamodb-table-name"
+
+  #DynamoDBTableArn:
+  #  Description: "DynamoDB Table ARN"
+  #  Value: !GetAtt EmployeesTable.Arn
+  #  Export:
+  #    Name: !Sub "${AWS::StackName}-dynamodb-table-arn"
+
+  IAMRoleArn:
+    Description: "Container Execution Role ARN"
+    Value: !GetAtt ContainerExecutionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-role-arn"
+
+  InstanceProfileArn:
+    Description: "Instance Profile ARN"
+    Value: !GetAtt ContainerInstanceProfile.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-instance-profile-arn"
