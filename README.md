@@ -124,7 +124,7 @@ aws ec2 authorize-security-group-ingress \
   --group-id $SECURITY_GROUP_ID \
   --protocol tcp \
   --port 8080 \
-  --cidr 0.0.0.0/0
+  --cidr ${MY_IP}/0 # make it more retrictive
 
 echo "SSH: ssh -i ~/.ssh/$KEY_NAME.pem ec2-user@$PUBLIC_IP"
 echo "App: http://$PUBLIC_IP:8080"
