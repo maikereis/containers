@@ -40,14 +40,16 @@ aws cloudformation describe-stacks \
 Set up authentication and environment variables:
 ```bash
 # Generate EC2 key pair
-aws ec2 create-key-pair --key-name container_keys \
-  --query 'KeyMaterial' --output text > ~/.ssh/container_keys.pem
-chmod 400 ~/.ssh/container_keys.pem
+KEY_NAME="container-keys-$(date +%Y%m%d)"
+aws ec2 create-key-pair --key-name $KEY_NAME \
+  --query 'KeyMaterial' --output text > ~/.ssh/${KEY_NAME}.pem
+chmod 600 ~/.ssh/${KEY_NAME}.pem
 
 # Environment variables
 export STACK_NAME="containers-stack"
 export KEY_NAME="container_keys"
 export INSTANCE_TYPE="t3.micro"
+export AWS_REGION="us-east-1"
 ```
 
 ### 3. Launch EC2 Instance
@@ -56,16 +58,19 @@ Retrieve CloudFormation outputs:
 ```bash
 SUBNET_ID=$(aws cloudformation describe-stacks \
   --stack-name $STACK_NAME \
+  --region $AWS_REGION \
   --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetId'].OutputValue" \
   --output text)
 
 SECURITY_GROUP_ID=$(aws cloudformation describe-stacks \
   --stack-name $STACK_NAME \
+  --region $AWS_REGION \
   --query "Stacks[0].Outputs[?OutputKey=='SecurityGroupId'].OutputValue" \
   --output text)
 
 INSTANCE_PROFILE=$(aws cloudformation describe-stacks \
   --stack-name $STACK_NAME \
+  --region $AWS_REGION \
   --query "Stacks[0].Outputs[?OutputKey=='InstanceProfileArn'].OutputValue" \
   --output text | cut -d'/' -f2)
 ```
