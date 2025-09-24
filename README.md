@@ -17,25 +17,7 @@ The CloudFormation template provisions:
 
 ## Quick Start
 
-### 1. Deploy Infrastructure
-
-```bash
-aws cloudformation create-stack \
-  --stack-name containers-stack \
-  --template-body file://containers-stack.yml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1
-```
-
-Monitor deployment status:
-```bash
-aws cloudformation describe-stacks \
-  --stack-name containers-stack \
-  --region us-east-1 \
-  --query "Stacks[0].StackStatus"
-```
-
-### 2. Configure Environment
+### 1. Configure Environment
 
 Set up authentication and environment variables:
 ```bash
@@ -50,6 +32,25 @@ export STACK_NAME="containers-stack"
 export KEY_NAME="container_keys"
 export INSTANCE_TYPE="t3.micro"
 export AWS_REGION="us-east-1"
+```
+
+
+### 2. Deploy Infrastructure
+
+```bash
+aws cloudformation create-stack \
+  --stack-name containers-stack \
+  --template-body file://containers-stack.yml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region $AWS_REGION
+```
+
+Monitor deployment status:
+```bash
+aws cloudformation describe-stacks \
+  --stack-name containers-stack \
+  --region $AWS_REGION \
+  --query "Stacks[0].StackStatus"
 ```
 
 ### 3. Launch EC2 Instance
@@ -90,8 +91,15 @@ EOF
 
 Launch instance:
 ```bash
+AMI_ID=$(aws ec2 describe-images \
+  --owners amazon \
+  --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" \
+  --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+  --output text \
+  --region $AWS_REGION)
+
 INSTANCE_ID=$(aws ec2 run-instances \
-  --image-id ami-0c02fb55956c7d316 \
+  --image-id $AMI_ID \
   --count 1 \
   --instance-type $INSTANCE_TYPE \
   --key-name $KEY_NAME \
@@ -100,11 +108,13 @@ INSTANCE_ID=$(aws ec2 run-instances \
   --iam-instance-profile Name=$INSTANCE_PROFILE \
   --associate-public-ip-address \
   --user-data "$USER_DATA" \
-  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ContainerExercise}]" \
+  --metadata-options "HttpTokens=required,HttpPutResponseHopLimit=2,HttpEndpoint=enabled" \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ContainerExercise},{Key=Environment,Value=Development}]" \
   --query 'Instances[0].InstanceId' \
-  --output text)
+  --output text \
+  --region $AWS_REGION)
 
-aws ec2 wait instance-running --instance-ids $INSTANCE_ID
+aws ec2 wait instance-running --instance-ids $INSTANCE_ID --region $AWS_REGION
 ```
 
 ### 4. Configure Network Access
@@ -113,26 +123,33 @@ Get instance IP and configure SSH access:
 ```bash
 PUBLIC_IP=$(aws ec2 describe-instances \
   --instance-ids $INSTANCE_ID \
+  --region $AWS_REGION \
   --query 'Reservations[0].Instances[0].PublicIpAddress' \
   --output text)
 
 # Allow SSH from your IP
 MY_IP=$(curl -s http://checkip.amazonaws.com)
+echo "Restricting SSH access to IP: $MY_IP"
+
 aws ec2 authorize-security-group-ingress \
   --group-id $SECURITY_GROUP_ID \
   --protocol tcp \
   --port 22 \
-  --cidr ${MY_IP}/32
+  --cidr ${MY_IP}/32 \
+  --region $AWS_REGION
+
+echo "SSH: ssh -i ~/.ssh/$KEY_NAME.pem ec2-user@$PUBLIC_IP"
+echo "Instance ID: $INSTANCE_ID"
 
 # Allow application access on port 8080
 aws ec2 authorize-security-group-ingress \
   --group-id $SECURITY_GROUP_ID \
   --protocol tcp \
   --port 8080 \
-  --cidr ${MY_IP}/0 # make it more retrictive
+  --cidr ${MY_IP}/32 \
+  --region $AWS_REGION 
 
-echo "SSH: ssh -i ~/.ssh/$KEY_NAME.pem ec2-user@$PUBLIC_IP"
-echo "App: http://$PUBLIC_IP:8080"
+echo "App: http://$PUBLIC_IP:8080 (accessible from your IP only)"
 ```
 
 ## Container Operations
@@ -141,11 +158,12 @@ echo "App: http://$PUBLIC_IP:8080"
 
 Connect to your instance and download the application:
 ```bash
-ssh -i ~/.ssh/container_keys.pem ec2-user@$PUBLIC_IP
+
+ssh -i ~/.ssh/$KEY_NAME.pem ec2-user@$PUBLIC_IP
 
 wget https://aws-tc-largeobjects.s3.us-west-2.amazonaws.com/DEV-AWS-MO-ContainersRedux/downloads/containers-src.zip
 unzip containers-src.zip
-cd first-container
+cd first-container  
 ```
 
 Build and run the container:
@@ -164,8 +182,8 @@ docker exec -it webapp /bin/sh
 
 Stop and remove container:
 ```bash
-docker stop webapp
-docker rm webapp
+docker stop webapp 2>/dev/null || true
+docker rm webapp 2>/dev/null || true
 ```
 
 ### Advanced Configuration
@@ -176,11 +194,21 @@ Run container with environment variables and volume mounting:
 printf "cinco\ncuatro\ntres\ndos\nuno" > ~/input.txt
 
 # Run with custom configuration
-docker run -d -p 8080:8080 \
+docker run -d \
+  -p 8080:8080 \
   -e MESSAGE_COLOR=#0000ff \
-  -v ~/input.txt:/app/input.txt \
+  -v ~/input.txt:/app/input.txt:ro \
   --name webapp \
+  --restart=unless-stopped \
+  --read-only \
+  --user 1001:1001 \
+  --security-opt=no-new-privileges:true \
+  --memory=256m \
+  --cpus=0.5 \
   first-container
+
+docker stop webapp 2>/dev/null || true
+docker rm webapp 2>/dev/null || true
 ```
 
 ## Troubleshooting
@@ -190,7 +218,7 @@ Check stack events for failed resources:
 ```bash
 aws cloudformation describe-stack-events \
   --stack-name containers-stack \
-  --region us-east-1 \
+  --region $AWS_REGION \
   --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].[LogicalResourceId, ResourceStatusReason]"
 ```
 
@@ -204,8 +232,16 @@ aws cloudformation describe-stack-events \
 Remove all resources when finished:
 ```bash
 # Terminate EC2 instance
-aws ec2 terminate-instances --instance-ids $INSTANCE_ID
+aws ec2 terminate-instances --instance-ids $INSTANCE_ID --region $AWS_REGION
+# wait
+aws ec2 wait instance-terminated --instance-ids $INSTANCE_ID --region $AWS_REGION
+ 
+# Delet keys
+aws ec2 delete-key-pair --key-name $KEY_NAME --region $AWS_REGION
+rm ~/.ssh/${KEY_NAME}.pem
 
 # Delete CloudFormation stack
-aws cloudformation delete-stack --stack-name containers-stack --region us-east-1
+aws cloudformation delete-stack --stack-name containers-stack --region $AWS_REGION
+# wait
+aws cloudformation wait stack-delete-complete --stack-name containers-stack --region $AWS_REGION
 ```
